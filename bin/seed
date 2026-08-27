@@ -1,0 +1,80 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Build the chat log the read test paginates through.
+ *
+ * Rows are grouped by workspace, because that is the unit the read path
+ * ranges over. Size per workspace matters more than the total: a workspace
+ * whose whole log fits in a few pages makes the read test a cache benchmark,
+ * and one with a million rows is not a chat room.
+ */
+$workspaces = max(1, (int) (getenv('WORKSPACES') ?: 512));
+$perWorkspace = max(1, (int) ($argv[1] ?? getenv('ROWS_PER_WORKSPACE') ?: 1_000));
+
+$words = ['ship', 'deploy', 'queue', 'cache', 'index', 'replica', 'latency', 'throughput',
+    'coroutine', 'socket', 'pipeline', 'cursor', 'rollback', 'migration', 'benchmark'];
+
+$sentence = static function () use ($words): string {
+    $body = [];
+
+    for ($w = mt_rand(6, 20); $w > 0; $w--) {
+        $body[] = $words[array_rand($words)];
+    }
+
+    return ucfirst(implode(' ', $body)).'.';
+};
+
+$started = time();
+$total = $workspaces * $perWorkspace;
+
+$pdo = new PDO(
+    getenv('PG_DSN') ?: 'pgsql:host=postgres;port=5432;dbname=bench',
+    getenv('PG_USER') ?: 'bench',
+    getenv('PG_PASSWORD') ?: 'bench',
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+);
+
+$pdo->exec('DROP TABLE IF EXISTS messages');
+$pdo->exec('CREATE TABLE messages (
+    id BIGSERIAL PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at BIGINT NOT NULL
+)');
+
+for ($ws = 0; $ws < $workspaces; $ws++) {
+    $pdo->beginTransaction();
+    $insert = $pdo->prepare('INSERT INTO messages (workspace_id, username, body, created_at) VALUES (?, ?, ?, ?)');
+
+    for ($r = 0; $r < $perWorkspace; $r++) {
+        $insert->execute([
+            $ws,
+            $words[array_rand($words)].'_'.mt_rand(1000, 999999),
+            $sentence(),
+            $started - mt_rand(0, 5_184_000),
+        ]);
+    }
+
+    $pdo->commit();
+}
+
+// Built after the rows, not before: maintaining it during the load would
+// cost more than one sort at the end.
+//
+// (workspace_id, id DESC) is the whole read path — a keyset page is a range
+// scan on this index's prefix, so it never touches the heap to find rows and
+// never sorts.
+$pdo->exec('CREATE INDEX messages_keyset ON messages (workspace_id, id DESC)');
+$pdo->exec('ANALYZE messages');
+
+fwrite(STDOUT, sprintf(
+    "seeded %d rows: %d workspaces x %d, in %ds\n",
+    $total,
+    $workspaces,
+    $perWorkspace,
+    time() - $started,
+));

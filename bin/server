@@ -1,0 +1,81 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use TrueAsync\HttpRequest;
+use TrueAsync\HttpResponse;
+use TrueAsync\HttpServer;
+use TrueAsync\HttpServerConfig;
+use TrueAsync\LogSeverity;
+
+$root = dirname(__DIR__);
+$port = (int) (getenv('HTTP_PORT') ?: 8080);
+$workers = (int) (getenv('WORKERS') ?: Async\available_parallelism());
+
+// A block of ports, not one.
+//
+// Every k6 VU holds its own connection, and Linux allows ~64.5k source ports
+// toward a single destination address+port. A run allocating 75k VUs
+// exhausts that and reports "cannot assign requested address" — a load
+// generator limit that reads as the server refusing connections, when the
+// server never saw the request at all. Listening on N ports multiplies the
+// tuple space by N; k6 pins each VU to one of them (see benchmark/target.js).
+$listeners = max(1, (int) (getenv('HTTP_PORTS') ?: 4));
+
+$config = new HttpServerConfig();
+
+for ($i = 0; $i < $listeners; $i++) {
+    $config->addHttp1Listener('0.0.0.0', $port + $i);
+}
+
+$config
+    ->setWorkers($workers)
+    // /stats reports Async\runtime_stats() and Async\cpu_usage(); nothing reads
+    // the server's own counters, and keeping them is per-request bookkeeping on
+    // every worker thread.
+    ->setStatsEnabled(false)
+    // A load generator opening tens of thousands of connections will be
+    // refused by the accept queue long before the server is actually busy, so
+    // these are raised to keep the ceiling in the application rather than in
+    // the socket layer.
+    ->setBacklog((int) (getenv('BACKLOG') ?: 65535))
+    ->setMaxConnections((int) (getenv('MAX_CONNECTIONS') ?: 200000))
+    ->setMaxInflightRequests((int) (getenv('MAX_INFLIGHT') ?: 200000))
+    ->setKeepAliveTimeout((int) (getenv('KEEPALIVE') ?: 65))
+    ->setReadTimeout(30)
+    ->setWriteTimeout(30)
+    // Compression would be measuring gzip, not the application.
+    ->setCompressionEnabled(false)
+    ->setLogSeverity(LogSeverity::WARN)
+    // Each worker is its own thread with its own PHP runtime, and it does not
+    // inherit anything the parent registered — including the autoloader. The
+    // bootloader is the hook that runs inside every worker as it comes up, and
+    // it is the only place the kernel can be built: see bootstrap/app.php.
+    ->setBootloader(static function () use ($root): void {
+        // Two statements, not one. A static call resolves its class before it
+        // evaluates its arguments, so App\Http\Kernel::install(require ...)
+        // looks the class up while the autoloader is still unregistered.
+        $kernel = require $root.'/bootstrap/app.php';
+
+        App\Http\Kernel::install($kernel);
+    });
+
+$server = new HttpServer($config);
+
+// A static closure captures nothing, so replicating the handler to each worker
+// thread transfers no object graph. Each worker holds its own kernel — and so
+// its own database connection pool.
+$server->addHttpHandler(static function (HttpRequest $request, HttpResponse $response): void {
+    App\Http\Kernel::instance()->handle($request, $response);
+});
+
+fwrite(STDOUT, sprintf(
+    "benchmark server: http://0.0.0.0:%d-%d  workers=%d  workspaces=%s\n",
+    $port,
+    $port + $listeners - 1,
+    $workers,
+    getenv('WORKSPACES') ?: '512',
+));
+
+$server->start();

@@ -1,0 +1,162 @@
+name: benchmark
+
+# k6 runs on this same network rather than against a published host port.
+# On Docker Desktop the host port goes through the VM's NAT layer, which
+# saturates well below what the server can serve — that would make this a
+# benchmark of Docker's port forwarder.
+#
+# Nothing here is pinned to a CPU count or a machine. Every service sizes
+# itself from whatever it is given; set WORKERS, WORKSPACES, VUS etc. per host.
+#
+# Deliberately no `cpus:` limits. Splitting the box statically between app, k6
+# and Postgres was measured and it was worse across the board — 35k/28k against
+# 44k/49k unbounded — because all three are bursty and a hard cap stops them
+# borrowing from each other. The kernel scheduler sharing 14 cores beats any
+# fixed split tried here.
+
+services:
+  app:
+    build: .
+    image: benchmark-app:local
+    container_name: benchmark-app
+    # The pool is opened in each worker's bootloader, so the database has to be
+    # accepting connections before the server starts — otherwise every worker
+    # fatals on connect and the server exits before it listens.
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      HTTP_PORT: "8080"
+      # Listener block, matched by TARGET_PORTS on the k6 service.
+      HTTP_PORTS: "${LISTEN_PORTS:-4}"
+      # Six, measured on a 14-core box with k6 beside it: 6 -> 51.5k/43.6k,
+      # 8 -> 43.4k, 10 -> 50.5k/42.8k, 14 -> 42.8k. More threads than the
+      # server has cores to spare just adds scheduling; the coroutines are
+      # cheap, the threads carrying them are not.
+      WORKERS: "${WORKERS:-6}"
+      JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
+      JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
+      PAGE_SIZE: "${PAGE_SIZE:-25}"
+      APP_KEY: "benchmark-key-not-a-secret-value"
+
+      # The tenancy boundary the chat log is keyed on. VUs are pinned to a
+      # workspace, so this decides how wide the read load spreads over the
+      # index. At the modelled ratio of 10-20 users per workspace, 8000 VUs
+      # wants ~500.
+      WORKSPACES: "${WORKSPACES:-512}"
+
+      PG_DSN: "pgsql:host=postgres;port=5432;dbname=bench"
+      PG_USER: "bench"
+      PG_PASSWORD: "bench"
+      # Per worker. Times WORKERS this is the backend count Postgres is asked
+      # to hold, so it must stay under max_connections below.
+      #
+      # Six, measured. A backend is a process, and the sweep is flat-to-worse
+      # in both directions from here: 2 -> 42.0k, 4 -> 41.7k, 6 -> 42.8k,
+      # 16 -> 39.0k, 48 -> 39.7k rps. Past ~60 backends they queue against each
+      # other for CPU instead of running, and the coroutine waiting on a free
+      # slot is parked for free anyway.
+      PG_POOL: "${PG_POOL:-6}"
+    ports:
+      - "${APP_PORT:-8080}-8083:8080-8083"
+    ulimits:
+      # A socket per connection, and the ramp opens tens of thousands.
+      nofile: { soft: 1048576, hard: 1048576 }
+    sysctls:
+      # setBacklog() is silently clamped to somaxconn; without this a ramp of
+      # tens of thousands of connections is refused at the accept queue long
+      # before the application is busy.
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: benchmark-postgres
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+    command:
+      - postgres
+      # WORKERS x PG_POOL backends, plus headroom for the seeder and psql.
+      - "-c"
+      - "max_connections=${PG_MAX_CONNECTIONS:-500}"
+      - "-c"
+      - "shared_buffers=2GB"
+      - "-c"
+      - "effective_cache_size=6GB"
+      # Commits are acknowledged before the WAL fsync returns. Durable against
+      # process death, not against sudden power loss — the tradeoff a write-heavy
+      # deployment makes when it can afford to lose the last few milliseconds.
+      - "-c"
+      - "synchronous_commit=off"
+      # Off: the WAL here is small rows at high rate, so compression spends CPU
+      # per record to save bytes that were never the constraint.
+      - "-c"
+      - "wal_compression=off"
+      - "-c"
+      - "max_wal_size=8GB"
+      # Every query here is an index range scan or a single-row insert, far
+      # under the cost threshold JIT pays off at — so it only ever costs the
+      # planner the check.
+      - "-c"
+      - "jit=off"
+      # Nothing here reads pg_stat_statements and every statement pays for it.
+      - "-c"
+      - "track_activities=off"
+      - "-c"
+      - "track_counts=on"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "${PG_PORT:-5533}:5432"
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    shm_size: 1gb
+
+  # One-shot: create and fill one log per workspace.
+  seed:
+    build: .
+    image: benchmark-app:local
+    profiles: [tools]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      WORKSPACES: "${WORKSPACES:-512}"
+      PG_DSN: "pgsql:host=postgres;port=5432;dbname=bench"
+      PG_USER: "bench"
+      PG_PASSWORD: "bench"
+    command: php bin/seed ${ROWS_PER_WORKSPACE:-1000}
+
+  # One-shot: `docker compose run --rm k6 run /scripts/<name>.js`
+  k6:
+    image: grafana/k6:latest
+    profiles: [tools]
+    depends_on:
+      app: { condition: service_started }
+    environment:
+      TARGET: "http://app:8080"
+      # Must match the app's HTTP_PORTS: VUs spread across app:8080..8083 so the
+      # ephemeral port range stops being the ceiling. See benchmark/target.js.
+      TARGET_PORTS: "${LISTEN_PORTS:-4}"
+      # Must match the app's WORKSPACES: each VU is pinned to one workspace, so
+      # this decides how many users share a database.
+      WORKSPACES: "${WORKSPACES:-512}"
+      K6_NO_USAGE_REPORT: "true"
+    volumes:
+      - ./benchmark:/scripts:ro
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    sysctls:
+      # One connection per VU means VU count is bounded by the ephemeral source
+      # port range, not by the server. The default 32768-60999 gives ~28k ports,
+      # which is why runs died at ~29k VUs with "cannot assign requested
+      # address" — a load generator limit that looks like a server failure.
+      # This gives ~64.5k, and benchmark/target.js multiplies it by the listener count.
+      net.ipv4.ip_local_port_range: "1024 65535"
+      # Let sockets in TIME_WAIT be reused for new outbound connections, so
+      # ports recycle instead of accumulating across a ramp.
+      net.ipv4.tcp_tw_reuse: "1"
+      net.ipv4.tcp_fin_timeout: "10"
