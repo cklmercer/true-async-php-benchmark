@@ -81,20 +81,112 @@ final class MessageController extends Controller
             ->first() ?? abort(404, 'No such message.');
     }
 
-    /** Insert a message, generating the fields the client did not send. */
-    public function store(Request $request): JsonResponse
+    /**
+     * One chat turn: several pages of history and a couple of messages, in a
+     * single request.
+     *
+     * The mirror of the other stack's turn(), statement for statement, so the
+     * two numbers differ by the framework and the runtime rather than by the
+     * work asked of Postgres. See that one for why the request rather than the
+     * query is the unit, why the reads are chained, and why the rows are
+     * counted instead of returned.
+     */
+    public function turn(Request $request): JsonResponse
     {
-        $username = $request->input('username');
-        $body = $request->input('body');
+        $workspace = self::workspace($request);
+        $cursor = (int) $request->query('cursor', '0');
 
-        DB::table('messages')->insert([
-            'workspace_id' => self::workspace($request),
-            'username' => substr(is_string($username) ? $username : self::username(), 0, 64),
-            'body' => substr(is_string($body) ? $body : self::sentence(), 0, 512),
-            'created_at' => time(),
-        ]);
+        $minRows = (int) config('benchmark.min_page_size');
+        $maxRows = (int) config('benchmark.max_page_size');
 
-        return response()->json(['ok' => true], 201);
+        $read = 0;
+        $written = 0;
+
+        foreach (self::steps() as $isWrite) {
+            if ($isWrite) {
+                $username = $request->input('username');
+                $body = $request->input('body');
+
+                DB::table('messages')->insert([
+                    'workspace_id' => $workspace,
+                    'username' => substr(is_string($username) ? $username : self::username(), 0, 64),
+                    'body' => substr(is_string($body) ? $body : self::sentence(), 0, 512),
+                    'created_at' => time(),
+                ]);
+
+                $written++;
+
+                continue;
+            }
+
+            $query = DB::table('messages')
+                ->select(self::COLUMNS)
+                ->where('workspace_id', $workspace);
+
+            if ($cursor > 0) {
+                $query->where('id', '<', $cursor);
+            }
+
+            $rows = $query->orderByDesc('id')->limit(mt_rand($minRows, $maxRows))->get();
+
+            // A page off the bottom of the log leaves the cursor where it is:
+            // there is nothing below it to page to, and moving it to 0 would
+            // silently restart the walk at the newest row.
+            if ($rows->isEmpty()) {
+                continue;
+            }
+
+            $read += $rows->count();
+            $cursor = $rows->last()->id;
+        }
+
+        return response()->json([
+            'ok' => true,
+            'read' => $read,
+            'written' => $written,
+            'next_cursor' => $cursor,
+        ], 201);
+    }
+
+    /**
+     * Where the writes fall among the reads.
+     *
+     * Interleaved rather than trailing: batching the inserts at the end of the
+     * turn would group their WAL writes and index updates in a way a client
+     * working through a conversation never does. A write lands wherever the
+     * number due by that point exceeds the number already placed, which spreads
+     * any two counts as evenly as they allow — four and two gives R R W R R W.
+     *
+     * Cached in a static because config() is cheap but not free, and this is
+     * the hottest endpoint in the suite.
+     *
+     * @return list<bool>
+     */
+    private static function steps(): array
+    {
+        static $steps = null;
+
+        if ($steps !== null) {
+            return $steps;
+        }
+
+        $writes = (int) config('benchmark.writes_per_request');
+        $total = max(1, (int) config('benchmark.reads_per_request') + $writes);
+        $steps = [];
+        $placed = 0;
+
+        for ($i = 0; $i < $total; $i++) {
+            $due = intdiv(($i + 1) * $writes, $total);
+            $isWrite = $due > $placed;
+
+            $steps[] = $isWrite;
+
+            if ($isWrite) {
+                $placed++;
+            }
+        }
+
+        return $steps;
     }
 
     /**

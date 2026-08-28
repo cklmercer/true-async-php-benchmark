@@ -24,10 +24,24 @@ final class MessageController
         'coroutine', 'socket', 'pipeline', 'cursor', 'rollback', 'migration', 'benchmark',
     ];
 
+    /**
+     * The order the queries of one turn go out in, built once per worker
+     * rather than per request. See steps().
+     *
+     * @var list<bool> true for a write
+     */
+    private readonly array $steps;
+
     public function __construct(
         private readonly Store $store,
         private readonly int $pageSize,
-    ) {}
+        private readonly int $minPageSize,
+        private readonly int $maxPageSize,
+        int $readsPerRequest,
+        int $writesPerRequest,
+    ) {
+        $this->steps = self::steps($readsPerRequest, $writesPerRequest);
+    }
 
     /**
      * Keyset pagination over one workspace's log.
@@ -71,20 +85,102 @@ final class MessageController
             ?? throw HttpException::notFound('No such message.');
     }
 
-    /** Insert a message, generating the fields the client did not send. */
-    public function store(Request $request): Response
+    /**
+     * One chat turn: several pages of history and a couple of messages, in a
+     * single request.
+     *
+     * The unit under test is the request, not the query, and a request that
+     * issues one statement is not what an application endpoint does — it opens
+     * a view, which reads what it needs and writes what the user did. Six
+     * statements per request is that shape: four keyset pages and two inserts,
+     * by default, and READS_PER_REQUEST / WRITES_PER_REQUEST set it (0 and 1
+     * gives back the single-insert endpoint this replaced).
+     *
+     * The reads are chained rather than independent — each page starts where
+     * the last one ended — because that is what paginating backwards through a
+     * log actually is, and it makes the four statements a dependent sequence
+     * rather than four copies of one query the planner has already cached.
+     *
+     * The rows are counted rather than returned. They are still fetched from
+     * the heap and materialised in PHP, so the database and the driver do all
+     * of their work; what is skipped is serialising up to four hundred rows per
+     * request, which at these rates would make this a JSON benchmark.
+     */
+    public function turn(Request $request): Response
     {
-        $username = $request->input('username');
-        $body = $request->input('body');
+        $workspace = self::workspace($request);
+        $cursor = (int) ($request->query['cursor'] ?? 0);
 
-        $this->store->append(
-            self::workspace($request),
-            substr(is_string($username) ? $username : self::username(), 0, 64),
-            substr(is_string($body) ? $body : self::sentence(), 0, 512),
-            time(),
-        );
+        $read = 0;
+        $written = 0;
 
-        return Response::json(['ok' => true], 201);
+        foreach ($this->steps as $isWrite) {
+            if ($isWrite) {
+                $username = $request->input('username');
+                $body = $request->input('body');
+
+                $this->store->append(
+                    $workspace,
+                    substr(is_string($username) ? $username : self::username(), 0, 64),
+                    substr(is_string($body) ? $body : self::sentence(), 0, 512),
+                    time(),
+                );
+
+                $written++;
+
+                continue;
+            }
+
+            $rows = $this->store->page($workspace, $cursor, mt_rand($this->minPageSize, $this->maxPageSize));
+
+            // A page off the bottom of the log leaves the cursor where it is:
+            // there is nothing below it to page to, and moving it to 0 would
+            // silently restart the walk at the newest row.
+            if ($rows === []) {
+                continue;
+            }
+
+            $read += count($rows);
+            $cursor = $rows[array_key_last($rows)]['id'];
+        }
+
+        return Response::json([
+            'ok' => true,
+            'read' => $read,
+            'written' => $written,
+            'next_cursor' => $cursor,
+        ], 201);
+    }
+
+    /**
+     * Where the writes fall among the reads.
+     *
+     * Interleaved rather than trailing: batching the inserts at the end of the
+     * turn would group their WAL writes and index updates in a way a client
+     * working through a conversation never does. A write lands wherever the
+     * number due by that point exceeds the number already placed, which spreads
+     * any two counts as evenly as they allow — four and two gives R R W R R W.
+     *
+     * @return list<bool>
+     */
+    private static function steps(int $reads, int $writes): array
+    {
+        $total = max(1, $reads + $writes);
+        $steps = [];
+        $placed = 0;
+
+        for ($i = 0; $i < $total; $i++) {
+            $due = intdiv(($i + 1) * $writes, $total);
+            $isWrite = $due > $placed;
+
+            $steps[] = $isWrite;
+
+            if ($isWrite) {
+                $placed++;
+            }
+        }
+
+        return $steps;
     }
 
     /**

@@ -103,12 +103,30 @@ final class Kernel
                 jitterMin: (int) (getenv('JITTER_MIN_MS') ?: 2),
                 jitterMax: (int) (getenv('JITTER_MAX_MS') ?: 120),
             ),
-            new MessageController($db, pageSize: (int) (getenv('PAGE_SIZE') ?: 25)),
+            new MessageController(
+                $db,
+                pageSize: (int) (getenv('PAGE_SIZE') ?: 25),
+                minPageSize: (int) (getenv('MIN_PAGE_SIZE') ?: 25),
+                maxPageSize: (int) (getenv('MAX_PAGE_SIZE') ?: 100),
+                // count(), not `?:`, because zero is a value here — a turn
+                // of six reads and no writes is a thing you would ask for, and
+                // "0" is falsy, so `?:` would hand back the default instead.
+                readsPerRequest: self::count('READS_PER_REQUEST', 4),
+                writesPerRequest: self::count('WRITES_PER_REQUEST', 2),
+            ),
         );
 
         $router->compile();
 
         return new self($router, new Handler(), Crypto::fromEnv());
+    }
+
+    /** An environment integer that is allowed to be zero. */
+    private static function count(string $key, int $default): int
+    {
+        $value = getenv($key);
+
+        return $value === false || $value === '' ? $default : (int) $value;
     }
 
     /**

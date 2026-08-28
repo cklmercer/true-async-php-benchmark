@@ -11,4 +11,12 @@ return [
     'jitter_min_ms' => (int) env('JITTER_MIN_MS', 2),
     'jitter_max_ms' => (int) env('JITTER_MAX_MS', 120),
     'page_size' => (int) env('PAGE_SIZE', 25),
+
+    // How many statements one chat turn issues, and how wide each read is.
+    // Four and two is six per request; 0 and 1 gives back a plain single-row
+    // insert endpoint.
+    'reads_per_request' => (int) env('READS_PER_REQUEST', 4),
+    'writes_per_request' => (int) env('WRITES_PER_REQUEST', 2),
+    'min_page_size' => (int) env('MIN_PAGE_SIZE', 25),
+    'max_page_size' => (int) env('MAX_PAGE_SIZE', 100),
 ];

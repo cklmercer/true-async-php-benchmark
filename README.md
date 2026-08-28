@@ -10,7 +10,8 @@ group, in Laravel's order, with real cookie encryption, sessions, CSRF and
 compiled routing.
 
 - **jitter** — full middleware, no database, 2-120ms of simulated work
-- **postgres** — a chat log on Postgres: keyset reads and inserts, 80/20
+- **postgres** — a chat log on Postgres: six statements per request, four
+  chained keyset pages and two inserts
 
 Both run against any of three servers, and `STACK` picks which one answers.
 Same tests, same generator, same database.
@@ -81,6 +82,8 @@ make jitter VUS=6000 HOLD=1m
 make postgres VUS=400
 make jitter STACK=laravel OCTANE_WORKERS=32
 make postgres STACK=laravel-async ASYNC_THREADS=8 PG_POOL=8
+make postgres READS_PER_REQUEST=8 WRITES_PER_REQUEST=4   # statements per request
+make postgres READS_PER_REQUEST=0 WRITES_PER_REQUEST=1   # one plain insert, as it was
 make stats          # what the server thinks it is doing
 make clean          # stop everything, drop the data
 ```
@@ -100,7 +103,7 @@ app/Database/              Store, and the Postgres implementation
 app/Support/Crypto.php     AES-256-CBC + HMAC cookie envelope
 app/Exceptions/            HttpException and the handler the pipeline renders through
 benchmark/jitter.js        no database on the path
-benchmark/database.js      the chat log: keyset reads and inserts
+benchmark/database.js      the chat log: one chat turn per request
 benchmark/target.js        spreads VUs across listener ports, pins each to a workspace
 benchmark/session.js       carries the session cookie across iterations
 benchmark/summary.js       the per-run report
@@ -129,6 +132,10 @@ latency are both over the hold.
 
 18.6M requests, zero failures.
 
+Those two rows predate the current workload: `postgres` was one keyset page and
+one insert per request then, against six statements now, so the number is not
+comparable with anything below and is kept as the author reported it.
+
 ### All three stacks, side by side
 
 A shorter shape on a different machine, so these numbers are comparable with
@@ -145,13 +152,15 @@ and latency are over the hold.
 | `laravel` | 276 | 15,591.8ms | 15,815.2ms | 0.00% |
 | `laravel-async` | 4,273 | 123.3ms | 2,971.7ms | 47.66% |
 
-**postgres**, 1,000 VUs — three keyset pages of 25-100 rows, or one insert, 80/20:
+**postgres**, 1,000 VUs — six statements per request: four chained keyset pages
+of 25-100 rows, interleaved with two inserts. rps is requests, so the statement
+rate is six times it.
 
-| stack | rps | med | p95 | failed |
-|---|---|---|---|---|
-| `async` | **28,357** | 30.5ms | 67.5ms | 0.00% |
-| `laravel` | 3,156 | 300.9ms | 447.4ms | 0.00% |
-| `laravel-async` | 2,715 | 132.7ms | 1,295.6ms | 0.00% |
+| stack | rps | statements/s | med | p95 | failed |
+|---|---|---|---|---|---|
+| `async` | **10,034** | **60,206** | 96.9ms | 138.1ms | 0.00% |
+| `laravel` | 3,725 | 22,347 | 255.4ms | 312.9ms | 0.00% |
+| `laravel-async` | 2,322 | 13,933 | 302.6ms | 986.5ms | 0.00% |
 
 Read the two tables together, because they disagree.
 
@@ -168,8 +177,8 @@ Octane control it is meant to beat. Once a request does real work rather than
 sleeping, the cost is Laravel's per-request work — the container, the middleware
 stack, the query builder — and coroutines do not make any of that cheaper. They
 only stop a thread idling during I/O, and with `PG_POOL` connections per thread
-there was not much idling left to recover. The gap to `async` on the same test,
-10x, is the framework, not the runtime.
+there was not much idling left to recover. The 4.3x gap to `async` on the same
+test is the framework, not the runtime.
 
 That is the question the third stack exists to answer, and the answer is that
 most of the headline gap is Laravel rather than TrueAsync.

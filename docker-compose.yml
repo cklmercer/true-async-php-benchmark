@@ -36,6 +36,13 @@ services:
       JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
       JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
       PAGE_SIZE: "${PAGE_SIZE:-25}"
+      # The statements one chat turn issues, and how wide each read is. Four
+      # and two is six per request. Must match on every stack, or the three
+      # numbers are not measuring the same work.
+      READS_PER_REQUEST: "${READS_PER_REQUEST:-4}"
+      WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
+      MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
+      MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
       APP_KEY: "benchmark-key-not-a-secret-value"
 
       # The tenancy boundary the chat log is keyed on. VUs are pinned to a
@@ -123,6 +130,13 @@ services:
       JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
       JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
       PAGE_SIZE: "${PAGE_SIZE:-25}"
+      # The statements one chat turn issues, and how wide each read is. Four
+      # and two is six per request. Must match on every stack, or the three
+      # numbers are not measuring the same work.
+      READS_PER_REQUEST: "${READS_PER_REQUEST:-4}"
+      WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
+      MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
+      MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
       WORKSPACES: "${WORKSPACES:-512}"
     ports:
       - "${LARAVEL_PORT:-8090}:8080"
@@ -195,6 +209,13 @@ services:
       JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
       JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
       PAGE_SIZE: "${PAGE_SIZE:-25}"
+      # The statements one chat turn issues, and how wide each read is. Four
+      # and two is six per request. Must match on every stack, or the three
+      # numbers are not measuring the same work.
+      READS_PER_REQUEST: "${READS_PER_REQUEST:-4}"
+      WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
+      MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
+      MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
       WORKSPACES: "${WORKSPACES:-512}"
     ports:
       - "${LARAVEL_ASYNC_PORT:-8091}:8080"
