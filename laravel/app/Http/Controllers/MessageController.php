@@ -97,6 +97,7 @@ final class MessageController extends Controller
 
         $minRows = (int) config('benchmark.min_page_size');
         $maxRows = (int) config('benchmark.max_page_size');
+        $cost = (float) config('benchmark.read_cost_ms');
 
         $data = [];
         $written = 0;
@@ -121,6 +122,14 @@ final class MessageController extends Controller
             $query = DB::table('messages')
                 ->select(self::COLUMNS)
                 ->where('workspace_id', $workspace);
+
+            // The same simulated read cost the other stack applies, as the same
+            // cross join against a one-row subquery so the planner evaluates it
+            // once per query rather than once per row. Interpolated because it
+            // is a boot-time number cast to float, never request input.
+            if ($cost > 0) {
+                $query->crossJoin(DB::raw('(SELECT pg_sleep('.($cost / 1000).')) AS _cost'));
+            }
 
             if ($cursor > 0) {
                 $query->where('id', '<', $cursor);

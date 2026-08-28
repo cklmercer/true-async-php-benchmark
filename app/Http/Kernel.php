@@ -142,6 +142,7 @@ final class Kernel
             username: getenv('PG_USER') ?: 'bench',
             password: getenv('PG_PASSWORD') ?: 'bench',
             poolSize: max(1, (int) (getenv('PG_POOL') ?: 16)),
+            readCostMs: (float) (getenv('READ_COST_MS') ?: 0),
         );
     }
 

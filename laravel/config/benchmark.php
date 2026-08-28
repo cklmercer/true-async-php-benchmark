@@ -19,4 +19,8 @@ return [
     'writes_per_request' => (int) env('WRITES_PER_REQUEST', 2),
     'min_page_size' => (int) env('MIN_PAGE_SIZE', 25),
     'max_page_size' => (int) env('MAX_PAGE_SIZE', 100),
+
+    // Milliseconds of simulated cost on each read, for modelling a query that
+    // is not a warm index lookup against a database on the same machine.
+    'read_cost_ms' => (float) env('READ_COST_MS', 0),
 ];

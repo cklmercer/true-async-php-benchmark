@@ -43,6 +43,10 @@ services:
       WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
       MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
       MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
+      # Milliseconds of simulated cost on each read. Zero is a warm index
+      # lookup against a database on this machine, which is the least
+      # interesting case a real deployment has.
+      READ_COST_MS: "${READ_COST_MS:-0}"
       APP_KEY: "benchmark-key-not-a-secret-value"
 
       # The tenancy boundary the chat log is keyed on. VUs are pinned to a
@@ -137,6 +141,10 @@ services:
       WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
       MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
       MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
+      # Milliseconds of simulated cost on each read. Zero is a warm index
+      # lookup against a database on this machine, which is the least
+      # interesting case a real deployment has.
+      READ_COST_MS: "${READ_COST_MS:-0}"
       WORKSPACES: "${WORKSPACES:-512}"
     ports:
       - "${LARAVEL_PORT:-8090}:8080"
@@ -216,6 +224,10 @@ services:
       WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
       MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
       MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
+      # Milliseconds of simulated cost on each read. Zero is a warm index
+      # lookup against a database on this machine, which is the least
+      # interesting case a real deployment has.
+      READ_COST_MS: "${READ_COST_MS:-0}"
       WORKSPACES: "${WORKSPACES:-512}"
     ports:
       - "${LARAVEL_ASYNC_PORT:-8091}:8080"

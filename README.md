@@ -173,6 +173,47 @@ something no application does.
 handle per statement, so a request has to win a free handle six times rather
 than once: most sail through, and the unlucky ones queue repeatedly.
 
+### What happens when the database is not instant
+
+Everything above runs Postgres in a container on the same machine, warm, hitting
+an index, answering in well under a millisecond. That is the least realistic
+thing in this benchmark, and it turns out to be the whole reason the coroutine
+stacks look unremarkable on `postgres`.
+
+`READ_COST_MS` adds that missing latency to each read, as a `pg_sleep` the
+planner runs once per query rather than once per row. It costs Postgres no CPU,
+so it does not distort the comparison by competing with PHP for the box — it
+only makes a read take as long as a read against a database on another machine
+takes. Sustained rps, 1,000 VUs, otherwise the shape above:
+
+| read cost | `async` | `laravel` | `laravel-async` |
+|---|---|---|---|
+| 0ms | **7,564** | 3,333 | 2,257 |
+| 2ms | **7,464** | 1,259 | 1,795 |
+| 10ms | **7,687** | 385 | 730 |
+| 25ms | **7,683** | 160 | 310 |
+
+Three things fall out of it.
+
+**The coroutine server does not notice.** Four reads at 25ms is 100ms of pure
+waiting added to every request, and `async` finishes the sweep 2% faster than it
+started. Not because the wait is free, but because it was already at its ceiling
+on CPU and on the generator: adding wait converted queueing time into sleeping
+time and left throughput alone. A parked coroutine costs a thread nothing.
+
+**Octane falls off a cliff.** 3,333 to 160, a 21x collapse. It blocks a worker
+for the whole of a request, so with ten workers and 100ms of sleep its ceiling
+is arithmetic — about a hundred requests a second, which is what it does.
+
+**The crossover is almost immediately.** `laravel-async` is behind the control
+at 0ms and ahead of it by 2ms, then roughly doubles it from there. The same
+application, the same framework, the same queries — the only question is whether
+the runtime can do something else while it waits.
+
+So the earlier result, that coroutines bought nothing on `postgres`, is true only
+of a database on the same box as the application. Move the database anywhere
+real and the ranking inverts at the first millisecond.
+
 Read the two tables together, because they disagree.
 
 On **jitter** the concurrency model is the whole story. Octane blocks a worker

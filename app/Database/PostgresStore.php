@@ -36,12 +36,30 @@ final class PostgresStore implements Store
     /** Hands out connection indices; recv() parks the coroutine when empty. */
     private readonly Channel $idle;
 
+    /**
+     * A read's FROM clause, which carries the simulated query cost.
+     *
+     * Built once because the cost is fixed at boot: a cross join against a
+     * one-row subquery, which the planner evaluates once per query rather than
+     * once per row (EXPLAIN shows the sleep node at loops=1). Empty when the
+     * cost is zero, so the default query is exactly what it always was.
+     */
+    private readonly string $readFrom;
+
     public function __construct(
         private readonly string $dsn,
         private readonly string $username,
         private readonly string $password,
         int $poolSize = 16,
+        float $readCostMs = 0.0,
     ) {
+        // Interpolated rather than bound: it is a boot-time number cast to
+        // float, not anything a request supplies, and a bound parameter here
+        // would make the planner treat the sleep as a per-row filter.
+        $this->readFrom = $readCostMs > 0
+            ? ' FROM messages, (SELECT pg_sleep('.($readCostMs / 1000).')) AS _cost'
+            : ' FROM messages';
+
         $this->idle = new Channel($poolSize);
 
         // Opened eagerly, in the worker's root scope. Connecting lazily inside a
@@ -102,13 +120,13 @@ final class PostgresStore implements Store
         return $cursor > 0
             ? $this->run(
                 'page',
-                'SELECT '.self::COLUMNS.' FROM messages WHERE workspace_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
+                'SELECT '.self::COLUMNS.$this->readFrom.' WHERE workspace_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
                 [$workspace, $cursor, $limit],
                 true,
             )
             : $this->run(
                 'head',
-                'SELECT '.self::COLUMNS.' FROM messages WHERE workspace_id = ? ORDER BY id DESC LIMIT ?',
+                'SELECT '.self::COLUMNS.$this->readFrom.' WHERE workspace_id = ? ORDER BY id DESC LIMIT ?',
                 [$workspace, $limit],
                 true,
             );
