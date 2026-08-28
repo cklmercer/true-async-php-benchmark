@@ -10,31 +10,47 @@ DC := docker compose
 
 # Which server the tests point at.
 #
-#   async     the TrueAsync coroutine server, this repo's subject
-#   laravel   stock Laravel on Octane/FrankenPHP, the control
+#   async           the TrueAsync coroutine server, this repo's subject
+#   laravel         stock Laravel on Octane/FrankenPHP, the control
+#   laravel-async   that same Laravel on the TrueAsync FrankenPHP worker
 #
-# The two are never up at once — `serve` stops the other one — because sharing
-# the box between them would measure the scheduler rather than either server.
+# The third is the control's application on the subject's runtime, so the three
+# together separate the two things the first two numbers confound: the
+# framework, and the concurrency model underneath it.
+#
+# Never more than one at once — `serve` stops the others — because sharing the
+# box between them would measure the scheduler rather than any of them.
 STACK ?= async
+
+# Every stack, for the targets that have to reach all of them.
+PROFILES := --profile laravel --profile laravel-async
 
 ifeq ($(STACK),async)
   SERVICE  := app
-  OTHER    := laravel
+  OTHERS   := laravel laravel-async
   PROFILE  :=
   LABEL    :=
   # Empty: the k6 service already defaults to the app's address and port block.
   K6_STACK :=
 else ifeq ($(STACK),laravel)
   SERVICE  := laravel
-  OTHER    := app
+  OTHERS   := app laravel-async
   PROFILE  := --profile laravel
   LABEL    := laravel-
   # Octane listens on one port, not a block, so the VU spread that target.js
   # does across app:8080-8083 has to be turned off. One port is plenty at the
   # concurrency this stack reaches.
   K6_STACK := --no-deps -e TARGET=http://laravel:8080 -e TARGET_PORTS=1
+else ifeq ($(STACK),laravel-async)
+  SERVICE  := laravel-async
+  OTHERS   := app laravel
+  PROFILE  := --profile laravel-async
+  LABEL    := laravel-async-
+  # One listener, same as the control: the worker threads multiplex on it, so a
+  # port block would spread VUs without adding capacity.
+  K6_STACK := --no-deps -e TARGET=http://laravel-async:8080 -e TARGET_PORTS=1
 else
-  $(error STACK must be async or laravel, not "$(STACK)")
+  $(error STACK must be async, laravel or laravel-async, not "$(STACK)")
 endif
 
 # Recursive, not simple: WORKSPACES is defined below this line, and `:=` would
@@ -122,7 +138,7 @@ benchmark: jitter postgres ## Run everything
 
 .PHONY: serve
 serve: ## Start the server and database (what the other machine points at)
-	@$(DC) stop $(OTHER) >/dev/null 2>&1 || true
+	@$(DC) stop $(OTHERS) >/dev/null 2>&1 || true
 	@WORKSPACES=$(WORKSPACES) $(DC) $(PROFILE) up -d --wait $(SERVICE) postgres >/dev/null
 	@docker logs benchmark-$(SERVICE) 2>&1 | tail -1
 
@@ -132,16 +148,24 @@ seed: ## Refill one log per workspace (the database test does this for you)
 	  $(DC) run --rm seed 2>&1 | tail -1
 
 .PHONY: build
-build: ## Rebuild both stacks' images
+build: ## Rebuild the async and Octane images
 	$(DC) --profile laravel build app laravel
+
+# Separate, and not part of `build`, because it is not the same kind of job:
+# it compiles PHP from the true-async branch and then builds FrankenPHP from
+# source against it. Tens of minutes on a cold cache, against about one for the
+# other two. Once built it is cached like anything else.
+.PHONY: build-laravel-async
+build-laravel-async: ## Rebuild the TrueAsync Laravel image (compiles PHP and FrankenPHP; slow)
+	$(DC) --profile laravel-async build laravel-async
 
 .PHONY: down
 down: ## Stop everything
-	$(DC) --profile laravel down
+	$(DC) $(PROFILES) down
 
 .PHONY: clean
 clean: ## Stop everything and drop the data
-	$(DC) --profile laravel down -v
+	$(DC) $(PROFILES) down -v
 
 .PHONY: stats
 stats: ## What the server thinks is happening
