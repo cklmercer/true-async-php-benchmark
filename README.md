@@ -161,13 +161,18 @@ read. rps is requests, so the statement rate is six times it.
 |---|---|---|---|---|---|---|
 | `async` | **7,569** | **45,414** | 344 MB/s | 129.0ms | 176.7ms | 0.00% |
 | `laravel` | 3,303 | 19,818 | 151 MB/s | 291.2ms | 354.4ms | 0.00% |
-| `laravel-async` | 2,101 | 12,607 | 93 MB/s | 503.1ms | 1,206.0ms | 0.00% |
+| `laravel-async` | 1,870 | 11,220 | 83 MB/s | 83.7ms | 2,293.1ms | 0.00% |
 
 A turn answers with 100-400 rows, so a response is tens of kilobytes and the
 fastest stack is moving a third of a gigabyte a second. Building and writing
 that is a real part of what a request costs here, which is the point — an
 endpoint that read four pages and replied with a count would be measuring
 something no application does.
+
+`laravel-async`'s median is far below its p95 because it borrows a database
+handle per statement, so a request has to win a free handle six times rather
+than once: most sail through, and the unlucky ones queue repeatedly. Run to run
+it lands between 1,670 and 1,870 rps.
 
 Read the two tables together, because they disagree.
 
@@ -184,8 +189,14 @@ Octane control it is meant to beat. Once a request does real work rather than
 sleeping, the cost is Laravel's per-request work — the container, the middleware
 stack, the query builder — and coroutines do not make any of that cheaper. They
 only stop a thread idling during I/O, and with `PG_POOL` connections per thread
-there was not much idling left to recover. The 3.6x gap to `async` on the same
+there was not much idling left to recover. The 4x gap to `async` on the same
 test is the framework, not the runtime.
+
+The pool is not what holds it back, which was worth checking rather than
+assuming. Sweeping `PG_POOL` at 6, 12 and 24 moves the number to 1,814, 1,823
+and 1,761 rps — flat, then worse. Connection availability is not the ceiling
+here; Laravel's per-request CPU work is, which is also why borrowing a handle
+per statement rather than per request costs throughput instead of buying it.
 
 That is the question the third stack exists to answer, and the answer is that
 most of the headline gap is Laravel rather than TrueAsync.

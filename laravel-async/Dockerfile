@@ -145,6 +145,7 @@ COPY laravel/app /app/www/app
 # The pieces that exist only because of coroutines, and the worker config. Both
 # managers replace a Laravel singleton that assumes one request per process.
 COPY laravel-async/app/Database/PooledDatabaseManager.php /app/www/app/Database/PooledDatabaseManager.php
+COPY laravel-async/app/Database/PooledConnection.php /app/www/app/Database/PooledConnection.php
 COPY laravel-async/app/Session/CoroutineAwareSessionManager.php /app/www/app/Session/CoroutineAwareSessionManager.php
 COPY laravel-async/public/async_entrypoint.php /app/www/public/async_entrypoint.php
 COPY laravel-async/Caddyfile /app/www/Caddyfile
