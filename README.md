@@ -149,9 +149,9 @@ and latency are over the hold.
 
 | stack | rps | med | p95 | failed |
 |---|---|---|---|---|
-| `async` | **45,336** | 85.2ms | 195.0ms | 0.00% |
-| `laravel` | 276 | 15,591.8ms | 15,815.2ms | 0.00% |
-| `laravel-async` | 4,273 | 123.3ms | 2,971.7ms | 47.66% |
+| `async` | **47,614** | 82.4ms | 190.2ms | 0.00% |
+| `laravel` | 278 | 15,454.2ms | 15,669.2ms | 0.00% |
+| `laravel-async` | *unstable — see below* | | | 0-100% |
 
 **postgres**, 1,000 VUs — six statements per request: four chained keyset pages
 of 25-100 rows, interleaved with two inserts, and the response carries every row
@@ -257,6 +257,15 @@ most of the headline gap is Laravel rather than TrueAsync.
 
 This one is an experiment, and it is reported as measured rather than tidied up.
 
+**The three stacks do not run the same PHP.** `laravel` runs a released 8.5.9
+from `dunglas/frankenphp`; `async` and `laravel-async` both run 8.6.0-dev from
+the `true-async` branch, and not even the same build of it — `async` takes the
+project's prebuilt image and `laravel-async` compiles its own. So a difference
+between the control and either coroutine stack is a difference of interpreter
+version as well as of concurrency model. There is no way around this while the
+extension only exists on a development branch, but it should be read as a
+caveat on every number here rather than as a detail.
+
 **Laravel's singletons assume one request per process.** Two of them had to be
 replaced before the stack was correct at all, and both are in this repo:
 
@@ -274,18 +283,42 @@ Those two were found because they fail loudly. There is no reason to think they
 are the only two, and a benchmark that had not checked would have reported a
 throughput number for a server that was quietly serving the wrong session.
 
-**The file session driver hits a runtime ceiling.** The 47.66% on jitter above
-is `file(): Stream error operation depth exceeded (1000), possible infinite
-recursion` — a TrueAsync limit on how many stream operations may be in flight at
-once. Laravel's `file` session driver puts a read and a write on every request,
-so the limit is reached whenever more than about a thousand requests are in
-flight together.
+**It is not stable on `jitter` at these concurrencies, and the number in the
+table above is deliberately missing because there is no honest single value to
+put there.** Five runs of the identical test at 4,500 VUs:
 
-The postgres test does not hit it, and the reason is instructive: `PG_POOL`
-bounds how many requests per thread can be doing work at any moment, so it caps
-the concurrent file I/O as a side effect. jitter has no such bound — every VU is
-parked in a `usleep` holding an open session — so it runs straight into the
-ceiling. Anything that bounds in-flight requests avoids it.
+| hold | rps | failed |
+|---|---|---|
+| 30s | 3,993 | 0.00% |
+| 30s (8,000 VUs) | 4,946 | 0.00% |
+| 45s | 4,273 | 47.66% |
+| 45s | 240 | 16.74% |
+| 45s | 46,065 | 100.00% — the server had stopped accepting |
+
+Short runs pass cleanly; longer ones degrade, and one wedged the server
+altogether. Two failure modes are named in its logs, 754 and 3,396 times in a
+single eight-minute window:
+
+- `RuntimeException: Session store not set on request.` — the same error
+  `CoroutineAwareSessionManager` was written to fix. Giving each coroutine its
+  own `Store` is evidently necessary and not sufficient; something still hands a
+  request to `ShareErrorsFromSession` with no session attached.
+- `Writing to the log file failed` — Laravel's own logging falling over.
+
+Earlier runs also produced `file(): Stream error operation depth exceeded
+(1000)`, a TrueAsync limit on in-flight stream operations, which the `file`
+session driver reaches easily because it puts a read and a write on every
+request. The container is never OOM-killed and never restarts, so this is the
+application degrading rather than the box running out.
+
+`postgres` is unaffected and runs clean at 0.00% on every stack, because
+`PG_POOL` bounds how many requests per thread are working at once and caps the
+concurrent file I/O as a side effect. `jitter` has no such bound — every VU sits
+in a `usleep` holding an open session.
 
 `async` does not have this problem because it does not use PHP streams for
 sessions.
+
+The honest reading is that this stack is a working experiment rather than
+something to run: it is correct enough to benchmark for tens of seconds, and it
+falls over under sustained load in ways that have not been fully traced.
