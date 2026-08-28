@@ -101,17 +101,17 @@ final class MessageController
      * log actually is, and it makes the four statements a dependent sequence
      * rather than four copies of one query the planner has already cached.
      *
-     * The rows are counted rather than returned. They are still fetched from
-     * the heap and materialised in PHP, so the database and the driver do all
-     * of their work; what is skipped is serialising up to four hundred rows per
-     * request, which at these rates would make this a JSON benchmark.
+     * The rows the turn read are returned, all of them. Serialising up to four
+     * hundred of them is a large part of what this request costs, and an
+     * endpoint that read them and then answered with a number would be
+     * measuring something no application does.
      */
     public function turn(Request $request): Response
     {
         $workspace = self::workspace($request);
         $cursor = (int) ($request->query['cursor'] ?? 0);
 
-        $read = 0;
+        $data = [];
         $written = 0;
 
         foreach ($this->steps as $isWrite) {
@@ -140,13 +140,16 @@ final class MessageController
                 continue;
             }
 
-            $read += count($rows);
             $cursor = $rows[array_key_last($rows)]['id'];
+
+            foreach ($rows as $row) {
+                $data[] = $row;
+            }
         }
 
         return Response::json([
             'ok' => true,
-            'read' => $read,
+            'data' => $data,
             'written' => $written,
             'next_cursor' => $cursor,
         ], 201);

@@ -11,7 +11,7 @@ compiled routing.
 
 - **jitter** — full middleware, no database, 2-120ms of simulated work
 - **postgres** — a chat log on Postgres: six statements per request, four
-  chained keyset pages and two inserts
+  chained keyset pages and two inserts, answering with every row it read
 
 Both run against any of three servers, and `STACK` picks which one answers.
 Same tests, same generator, same database.
@@ -133,8 +133,9 @@ latency are both over the hold.
 18.6M requests, zero failures.
 
 Those two rows predate the current workload: `postgres` was one keyset page and
-one insert per request then, against six statements now, so the number is not
-comparable with anything below and is kept as the author reported it.
+one insert per request then, against six statements and a much larger response
+now, so the number is not comparable with anything below and is kept as the
+author reported it.
 
 ### All three stacks, side by side
 
@@ -153,14 +154,20 @@ and latency are over the hold.
 | `laravel-async` | 4,273 | 123.3ms | 2,971.7ms | 47.66% |
 
 **postgres**, 1,000 VUs — six statements per request: four chained keyset pages
-of 25-100 rows, interleaved with two inserts. rps is requests, so the statement
-rate is six times it.
+of 25-100 rows, interleaved with two inserts, and the response carries every row
+read. rps is requests, so the statement rate is six times it.
 
-| stack | rps | statements/s | med | p95 | failed |
-|---|---|---|---|---|---|
-| `async` | **10,034** | **60,206** | 96.9ms | 138.1ms | 0.00% |
-| `laravel` | 3,725 | 22,347 | 255.4ms | 312.9ms | 0.00% |
-| `laravel-async` | 2,322 | 13,933 | 302.6ms | 986.5ms | 0.00% |
+| stack | rps | statements/s | response | med | p95 | failed |
+|---|---|---|---|---|---|---|
+| `async` | **7,569** | **45,414** | 344 MB/s | 129.0ms | 176.7ms | 0.00% |
+| `laravel` | 3,303 | 19,818 | 151 MB/s | 291.2ms | 354.4ms | 0.00% |
+| `laravel-async` | 2,101 | 12,607 | 93 MB/s | 503.1ms | 1,206.0ms | 0.00% |
+
+A turn answers with 100-400 rows, so a response is tens of kilobytes and the
+fastest stack is moving a third of a gigabyte a second. Building and writing
+that is a real part of what a request costs here, which is the point — an
+endpoint that read four pages and replied with a count would be measuring
+something no application does.
 
 Read the two tables together, because they disagree.
 
@@ -177,7 +184,7 @@ Octane control it is meant to beat. Once a request does real work rather than
 sleeping, the cost is Laravel's per-request work — the container, the middleware
 stack, the query builder — and coroutines do not make any of that cheaper. They
 only stop a thread idling during I/O, and with `PG_POOL` connections per thread
-there was not much idling left to recover. The 4.3x gap to `async` on the same
+there was not much idling left to recover. The 3.6x gap to `async` on the same
 test is the framework, not the runtime.
 
 That is the question the third stack exists to answer, and the answer is that

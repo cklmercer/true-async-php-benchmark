@@ -85,11 +85,10 @@ final class MessageController extends Controller
      * One chat turn: several pages of history and a couple of messages, in a
      * single request.
      *
-     * The mirror of the other stack's turn(), statement for statement, so the
-     * two numbers differ by the framework and the runtime rather than by the
-     * work asked of Postgres. See that one for why the request rather than the
-     * query is the unit, why the reads are chained, and why the rows are
-     * counted instead of returned.
+     * The mirror of the other stack's turn(), statement for statement and row
+     * for row, so the two numbers differ by the framework and the runtime
+     * rather than by the work asked of Postgres. See that one for why the
+     * request rather than the query is the unit, and why the reads are chained.
      */
     public function turn(Request $request): JsonResponse
     {
@@ -99,7 +98,7 @@ final class MessageController extends Controller
         $minRows = (int) config('benchmark.min_page_size');
         $maxRows = (int) config('benchmark.max_page_size');
 
-        $read = 0;
+        $data = [];
         $written = 0;
 
         foreach (self::steps() as $isWrite) {
@@ -136,13 +135,16 @@ final class MessageController extends Controller
                 continue;
             }
 
-            $read += $rows->count();
             $cursor = $rows->last()->id;
+
+            foreach ($rows as $row) {
+                $data[] = $row;
+            }
         }
 
         return response()->json([
             'ok' => true,
-            'read' => $read,
+            'data' => $data,
             'written' => $written,
             'next_cursor' => $cursor,
         ], 201);

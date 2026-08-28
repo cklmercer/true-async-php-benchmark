@@ -28,10 +28,12 @@ const MAX_ROWS = Number(__ENV.MAX_PAGE_SIZE || 100);
 const FLOOR = READS * MAX_ROWS;
 
 export const options = {
-  // Nothing here reads a response body — the checks are on status alone —
-  // and k6 was measured using 7.7 cores to the server's 2.2. Not
-  // allocating 6 GB of bodies per run is free throughput on the
-  // generator side, which is the side that is actually saturated.
+  // A turn answers with every row it read, so a response is tens of kilobytes
+  // rather than hundreds of bytes. The server still builds and writes all of
+  // it and k6 still reads it off the socket, so serialisation and network are
+  // both measured; what is skipped is the generator allocating and parsing it.
+  // That is deliberate — k6 was measured taking 7.7 cores to the server's 2.2,
+  // so a generator that parsed every row would be the thing under test.
   discardResponseBodies: true,
   scenarios: {
     chat: {
