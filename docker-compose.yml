@@ -140,6 +140,76 @@ services:
       net.core.somaxconn: "65535"
       net.ipv4.tcp_max_syn_backlog: "65535"
 
+  # The third stack: the control's Laravel again, on the TrueAsync FrankenPHP
+  # worker instead of Octane. Same skeleton, same routes, same controllers, same
+  # middleware — the build copies them out of ./laravel — so what separates this
+  # number from the control's is the server underneath and nothing else.
+  #
+  # It answers the question the control cannot: how much of the gap between the
+  # two other stacks is coroutines, and how much is simply not being Laravel.
+  #
+  # Started instead of the others, never beside them.
+  laravel-async:
+    build:
+      # The repository root, because the image copies ./laravel as well as this
+      # stack's own files. Nothing is duplicated between the two.
+      context: .
+      dockerfile: laravel-async/Dockerfile
+    image: benchmark-laravel-async:local
+    container_name: benchmark-laravel-async
+    profiles: [laravel-async]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      # Worker threads, each running one booted application shared by every
+      # coroutine on it. The analogue of the async stack's WORKERS, not of
+      # Octane's OCTANE_WORKERS: a thread here is not blocked for the length of
+      # a request, so this is a core count and not a concurrency ceiling.
+      ASYNC_THREADS: "${ASYNC_THREADS:-6}"
+      # Per thread, same as the async stack's PG_POOL. This is what stops the
+      # coroutines on a thread sharing one PDO handle; see PooledDatabaseManager.
+      PG_POOL: "${PG_POOL:-6}"
+
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: "base64:YmVuY2htYXJrLWtleS1ub3QtYS1zZWNyZXQtdmFsdWU="
+      APP_URL: "http://laravel-async:8080"
+      LOG_CHANNEL: stderr
+      LOG_LEVEL: warning
+
+      # Identical to the control's, and for the same reasons — see the notes on
+      # the `laravel` service above.
+      SESSION_DRIVER: file
+      SESSION_COOKIE: bench_session
+      SESSION_LIFETIME: "120"
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: bench
+      DB_USERNAME: bench
+      DB_PASSWORD: bench
+
+      JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
+      JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
+      PAGE_SIZE: "${PAGE_SIZE:-25}"
+      WORKSPACES: "${WORKSPACES:-512}"
+    ports:
+      - "${LARAVEL_ASYNC_PORT:-8091}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/up || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 20s
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
+
   postgres:
     image: postgres:17-alpine
     container_name: benchmark-postgres

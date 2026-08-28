@@ -1,0 +1,33 @@
+{
+	auto_https off
+	admin off
+	frankenphp {
+		# Must be strictly greater than the worker count; the entrypoint derives it.
+		num_threads {$ASYNC_TOTAL_THREADS:7}
+		worker {
+			file /app/www/public/async_entrypoint.php
+			num {$ASYNC_THREADS:6}
+			async
+			match *
+		}
+	}
+}
+
+:8080 {
+	log {
+		output discard
+	}
+	root * /app/www/public
+	route {
+		# The README's example rewrite is `?uri={http.request.uri.path}`, which
+		# throws the original query string away. Every read in the database test
+		# carries ?workspace=&limit=&cursor=, so the whole URI is passed in a
+		# header instead and the rewrite is left with nothing to preserve.
+		request_header X-Original-Uri {http.request.uri}
+		rewrite * /async_entrypoint.php
+		php_server {
+			index off
+			file_server off
+		}
+	}
+}
