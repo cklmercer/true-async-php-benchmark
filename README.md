@@ -12,6 +12,10 @@ compiled routing.
 - **jitter** — full middleware, no database, 2-120ms of simulated work
 - **postgres** — a chat log on Postgres: keyset reads and inserts, 80/20
 
+Both run against either of two servers: the TrueAsync coroutine server this
+repo is about, and stock Laravel on Octane/FrankenPHP as the control. Same
+tests, same generator, same database — `STACK` picks which one answers.
+
 The chat log is keyed by workspace, the tenancy boundary, at ten to twenty
 users each. `WORKSPACES` defaults to 512, and each VU is pinned to one for the
 run, so a read is a range scan over one tenant's slice of the index.
@@ -30,6 +34,17 @@ make jitter
 make postgres
 ```
 
+Against the Laravel control instead:
+
+```sh
+make benchmark STACK=laravel
+make jitter STACK=laravel
+```
+
+The two servers are never up at once — starting one stops the other, because
+sharing the box between them would measure the scheduler rather than either
+server.
+
 k6 is the limit on one box, so it can be run from another machine instead —
 `make serve` here, and there:
 
@@ -43,6 +58,7 @@ Common overrides:
 make postgres WORKSPACES=1024 ROWS_PER_WORKSPACE=5000
 make jitter VUS=6000 HOLD=1m
 make postgres VUS=400
+make jitter STACK=laravel OCTANE_WORKERS=32
 make stats          # what the server thinks it is doing
 make clean          # stop everything, drop the data
 ```

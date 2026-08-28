@@ -7,10 +7,40 @@
 # seeds, and prints its numbers.
 
 DC := docker compose
+
+# Which server the tests point at.
+#
+#   async     the TrueAsync coroutine server, this repo's subject
+#   laravel   stock Laravel on Octane/FrankenPHP, the control
+#
+# The two are never up at once — `serve` stops the other one — because sharing
+# the box between them would measure the scheduler rather than either server.
+STACK ?= async
+
+ifeq ($(STACK),async)
+  SERVICE  := app
+  OTHER    := laravel
+  PROFILE  :=
+  LABEL    :=
+  # Empty: the k6 service already defaults to the app's address and port block.
+  K6_STACK :=
+else ifeq ($(STACK),laravel)
+  SERVICE  := laravel
+  OTHER    := app
+  PROFILE  := --profile laravel
+  LABEL    := laravel-
+  # Octane listens on one port, not a block, so the VU spread that target.js
+  # does across app:8080-8083 has to be turned off. One port is plenty at the
+  # concurrency this stack reaches.
+  K6_STACK := --no-deps -e TARGET=http://laravel:8080 -e TARGET_PORTS=1
+else
+  $(error STACK must be async or laravel, not "$(STACK)")
+endif
+
 # Recursive, not simple: WORKSPACES is defined below this line, and `:=` would
 # expand it to empty here — leaving the generator on its own default while the
 # server used yours.
-K6 = $(DC) run --rm $(if $(TARGET),--no-deps -e TARGET=$(TARGET),) -e WORKSPACES=$(WORKSPACES) k6 run
+K6 = $(DC) run --rm $(if $(TARGET),--no-deps -e TARGET=$(TARGET),$(K6_STACK)) -e WORKSPACES=$(WORKSPACES) k6 run
 
 # Where the generator points. Empty means "the app this compose file starts".
 #
@@ -76,13 +106,13 @@ help: ## List targets
 .PHONY: jitter
 jitter: ## Response-time jitter, no database on the path
 	@$(if $(TARGET),,$(MAKE) --no-print-directory serve)
-	$(K6) -e RUN_NAME=jitter -e VUS=$(VUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) /scripts/jitter.js
+	$(K6) -e RUN_NAME=$(LABEL)jitter -e VUS=$(VUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) /scripts/jitter.js
 
 .PHONY: postgres
 postgres: VUS := $(POSTGRES_VUS)
 postgres: ## The chat log, read and written per workspace
 	@$(if $(TARGET),,$(MAKE) --no-print-directory serve seed)
-	$(K6) -e RUN_NAME=postgres -e VUS=$(VUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) \
+	$(K6) -e RUN_NAME=$(LABEL)postgres -e VUS=$(VUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) \
 	      -e MAX_ID=$(ROWS_PER_WORKSPACE) /scripts/database.js
 
 .PHONY: benchmark
@@ -92,8 +122,9 @@ benchmark: jitter postgres ## Run everything
 
 .PHONY: serve
 serve: ## Start the server and database (what the other machine points at)
-	@WORKSPACES=$(WORKSPACES) $(DC) up -d --wait app postgres >/dev/null
-	@docker logs benchmark-app 2>&1 | tail -1
+	@$(DC) stop $(OTHER) >/dev/null 2>&1 || true
+	@WORKSPACES=$(WORKSPACES) $(DC) $(PROFILE) up -d --wait $(SERVICE) postgres >/dev/null
+	@docker logs benchmark-$(SERVICE) 2>&1 | tail -1
 
 .PHONY: seed
 seed: ## Refill one log per workspace (the database test does this for you)
@@ -101,16 +132,16 @@ seed: ## Refill one log per workspace (the database test does this for you)
 	  $(DC) run --rm seed 2>&1 | tail -1
 
 .PHONY: build
-build: ## Rebuild the app image
-	$(DC) build app
+build: ## Rebuild the selected stack's image
+	$(DC) $(PROFILE) build $(SERVICE)
 
 .PHONY: down
 down: ## Stop everything
-	$(DC) down
+	$(DC) --profile laravel down
 
 .PHONY: clean
 clean: ## Stop everything and drop the data
-	$(DC) down -v
+	$(DC) --profile laravel down -v
 
 .PHONY: stats
 stats: ## What the server thinks is happening
@@ -118,4 +149,4 @@ stats: ## What the server thinks is happening
 
 .PHONY: logs
 logs: ## Follow app + database logs
-	$(DC) logs -f app postgres
+	$(DC) $(PROFILE) logs -f $(SERVICE) postgres

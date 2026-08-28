@@ -68,6 +68,78 @@ services:
       net.core.somaxconn: "65535"
       net.ipv4.tcp_max_syn_backlog: "65535"
 
+  # The control: stock Laravel on Octane/FrankenPHP, no TrueAsync anywhere.
+  #
+  # Started instead of `app`, never beside it — `make jitter STACK=laravel`
+  # stops the other one first, because two servers sharing the box would be
+  # measuring the scheduler.
+  laravel:
+    build: ./laravel
+    image: benchmark-laravel:local
+    container_name: benchmark-laravel
+    profiles: [laravel]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      HTTP_PORT: "8080"
+      # Octane's default is one worker per core. A worker is blocked for the
+      # whole of a request here, including the jitter sleep, so this is the
+      # concurrency ceiling of the entire stack.
+      OCTANE_WORKERS: "${OCTANE_WORKERS:-auto}"
+      # Octane recycles a worker every 500 requests by default, which at these
+      # rates is a reboot several times a second.
+      OCTANE_MAX_REQUESTS: "${OCTANE_MAX_REQUESTS:-10000000}"
+
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: "base64:YmVuY2htYXJrLWtleS1ub3QtYS1zZWNyZXQtdmFsdWU="
+      APP_URL: "http://laravel:8080"
+      LOG_CHANNEL: stderr
+      LOG_LEVEL: warning
+
+      # The skeleton defaults to the database driver, which would put a query
+      # on the jitter path — a test that is meant to have no database on it.
+      #
+      # `file`, not `cookie`. Laravel's cookie driver keeps the session id in
+      # SESSION_COOKIE and the payload in a second cookie named after that id,
+      # so a client has to carry both; the k6 scripts carry the session cookie
+      # and XSRF-TOKEN, which is what a browser sends and what the other stack
+      # needs. Under the cookie driver every request would arrive with no
+      # payload, mint a new session, and 419 every write.
+      SESSION_DRIVER: file
+      SESSION_COOKIE: bench_session
+      SESSION_LIFETIME: "120"
+      # Same reasoning: the defaults are database-backed.
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: bench
+      DB_USERNAME: bench
+      DB_PASSWORD: bench
+
+      JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
+      JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
+      PAGE_SIZE: "${PAGE_SIZE:-25}"
+      WORKSPACES: "${WORKSPACES:-512}"
+    ports:
+      - "${LARAVEL_PORT:-8090}:8080"
+    # The base image ships a healthcheck for its own default server, which this
+    # one replaces; /up is the skeleton's health route.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/up || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 20s
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
+
   postgres:
     image: postgres:17-alpine
     container_name: benchmark-postgres
