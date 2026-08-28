@@ -132,8 +132,8 @@ seed: ## Refill one log per workspace (the database test does this for you)
 	  $(DC) run --rm seed 2>&1 | tail -1
 
 .PHONY: build
-build: ## Rebuild the selected stack's image
-	$(DC) $(PROFILE) build $(SERVICE)
+build: ## Rebuild both stacks' images
+	$(DC) --profile laravel build app laravel
 
 .PHONY: down
 down: ## Stop everything
