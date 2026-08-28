@@ -42,6 +42,7 @@ Common overrides:
 ```sh
 make postgres WORKSPACES=1024 ROWS_PER_WORKSPACE=5000
 make jitter VUS=6000 HOLD=1m
+make postgres VUS=400
 make stats          # what the server thinks it is doing
 make clean          # stop everything, drop the data
 ```
@@ -69,21 +70,13 @@ benchmark/summary.js       the per-run report
 
 ## Results
 
-14-core box, 6 worker threads, k6 on the same machine. 3 minutes per test:
-30s ramp, 2m15s hold, 15s ramp-down. Rate and latency are both over the hold —
-the ramp runs at half load or less, which flatters latency and drags the rate.
+Ryzen 7 9700X (8 cores, 16 threads), 64 GB, 6 worker threads, k6 on the same
+machine. 3 minutes per test: 30s ramp, 2m15s hold, 15s ramp-down. Rate and
+latency are both over the hold.
 
-| test | VUs | requests | rps | med | p95 | p99 | failed |
-|---|---|---|---|---|---|---|---|
-| jitter | 4,500 | 8,771,559 | **54,222** | 73.8ms | 134.8ms | 166.8ms | 0.00% |
-| postgres | 150 | 9,284,366 | **53,294** | 2.1ms | 6.3ms | 9.6ms | 0.00% |
+| test | VUs | requests | rps | avg | med | p95 | p99 | failed |
+|---|---|---|---|---|---|---|---|---|
+| jitter | 4,500 | 8.73M | **64,600** | 66.7ms | 66.0ms | 122.8ms | 154.6ms | 0.00% |
+| postgres | 1,000 | 9.91M | **73,400** | 2.0ms | 1.7ms | 4.4ms | 6.5ms | 0.00% |
 
-18.1M requests, zero failures.
-
-jitter carries a deliberate 2-120ms sleep, so ~61ms of its 73.8ms median is the
-sleep itself — roughly 13ms is the server under 4,500 concurrent connections.
-
-Neither number is the server's ceiling. k6 shares the box and takes 4-6 cores to
-the server's 3, so both curves bend on the generator: jitter falls off past 4,500
-VUs and the database test peaks near 100. Run the generator on a second machine
-to find where the server actually bends.
+18.6M requests, zero failures.

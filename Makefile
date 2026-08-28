@@ -40,21 +40,27 @@ DOWN     ?= 15s
 #   jitter                    database
 #   3000 -> 42,858            50 -> 52,043   med 0.7ms
 #   4000 -> 51,475            100 -> 55,116  med 1.3ms
-#   4500 -> 54,088  <-        150 -> 54,099  <- med 2.1ms
+#   4500 -> 54,088  <-        150 -> 54,099  med 2.1ms
 #   5000 -> 52,025            200 -> 51,684  med 2.8ms
 #                             400 -> 46,534  med 6.1ms
-#                             1000 -> 43,633 med 17.6ms
+#                             1000 -> 43,633 <- med 17.6ms
 #
 # The two curves have opposite shapes because the tests are shaped differently.
 # jitter parks each VU in a 2-120ms sleep, so throughput is VUs/iteration and
 # it needs thousands in flight to reach a plateau. The database test has no
-# sleep, so the only thing more VUs buys is more generator overhead per
-# request: it peaks near 100 and falls away steadily after.
+# sleep, so every extra VU buys nothing but another goja runtime competing with
+# the server for the same cores — the curve slopes down the whole way, and its
+# peak is at an almost idle server. 1000 is the default anyway, because a
+# thousand connections in flight is a load worth quoting.
 #
 # Both curves bend on k6, not on the server — see the TARGET note above for
 # how to take the generator off the box and find out where the server bends.
+#
+# One knob for both tests: VUS. `make jitter VUS=6000`, `make postgres VUS=400`.
+# They only start from different defaults, because they want different amounts
+# of concurrency.
 VUS      ?= 4500
-DBVUS    ?= 150
+POSTGRES_VUS ?= 1000
 
 # The tenancy boundary: ~10-20 users in each. VUs are pinned to a workspace,
 # so this also decides how wide the read load spreads over the index.
@@ -73,9 +79,10 @@ jitter: ## Response-time jitter, no database on the path
 	$(K6) -e RUN_NAME=jitter -e VUS=$(VUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) /scripts/jitter.js
 
 .PHONY: postgres
+postgres: VUS := $(POSTGRES_VUS)
 postgres: ## The chat log, read and written per workspace
 	@$(if $(TARGET),,$(MAKE) --no-print-directory serve seed)
-	$(K6) -e RUN_NAME=postgres -e VUS=$(DBVUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) \
+	$(K6) -e RUN_NAME=postgres -e VUS=$(VUS) -e RAMP=$(RAMP) -e HOLD=$(HOLD) -e DOWN=$(DOWN) \
 	      -e MAX_ID=$(ROWS_PER_WORKSPACE) /scripts/database.js
 
 .PHONY: benchmark
