@@ -1,5 +1,9 @@
 // A chat log, partitioned by workspace. GETs keyset-paginate, POSTs insert,
 // 80/20 — the split is stated because the original never did.
+//
+// The 80/20 is a share of requests, not of iterations. A read iteration issues
+// READS pages and a write iteration issues one, so the two are not the same
+// number once READS is above one; see WRITE_CHANCE.
 import http from 'k6/http';
 import { report, holdThresholds, holding, ms } from './summary.js';
 import { State, remember, params } from './session.js';
@@ -15,11 +19,24 @@ const HOLD_MS = ms(HOLD);
 // not the total row count across every database.
 const MAX_ID = Number(__ENV.MAX_ID || 1000);
 const WRITE_RATIO = Number(__ENV.WRITE_RATIO || 0.2);
-// The page a read asks for. Also the margin a cursor has to keep above the
-// bottom of a workspace's id block for the page to come back full.
-const PAGE = Number(__ENV.PAGE_SIZE || 25);
-// How far above that floor the cursor may be drawn.
-const SPAN = Math.max(1, MAX_ID - PAGE);
+// A read iteration issues this many pages, each a fresh keyset query.
+const READS = Number(__ENV.READS_PER_ITERATION || 3);
+// Rows per page, drawn per query. The controller clamps limit to 100, so that
+// is the ceiling here too — asking for more would silently return 100.
+const MIN_ROWS = Number(__ENV.MIN_ROWS || 25);
+const MAX_ROWS = Number(__ENV.MAX_ROWS || 100);
+const ROW_SPREAD = MAX_ROWS - MIN_ROWS + 1;
+
+// The per-iteration coin flip that lands WRITE_RATIO of *requests* on the write
+// path. A read iteration issues READS requests and a write iteration issues
+// one, so flipping at WRITE_RATIO directly would under-weight writes — at
+// READS=3 it gives 8% of requests, not 20%.
+//
+//   p / ((1 - p) * READS + p) = WRITE_RATIO
+//
+// solved for p. Reduces to WRITE_RATIO when READS is 1, so the single-page
+// behaviour is unchanged.
+const WRITE_CHANCE = (WRITE_RATIO * READS) / (1 - WRITE_RATIO + WRITE_RATIO * READS);
 
 export const options = {
   // Nothing here reads a response body — the checks are on status alone —
@@ -60,9 +77,9 @@ const WRITE_HOLD = { tags: { name: 'POST /messages', phase: 'hold' }, headers: J
 
 // Everything constant about this VU's URLs, resolved once. target() and
 // workspace() are both VU-local and never change after the first call, so
-// re-interpolating them per iteration is pure generator overhead.
+// re-interpolating them per iteration is pure generator overhead. A read's
+// limit and cursor both vary per query now, so only the prefix is cached.
 let base = null;
-let readUrl = null;
 let writeUrl = null;
 // The first id this VU's workspace owns, less one. See the cursor note below.
 let block = 0;
@@ -76,7 +93,6 @@ export default function () {
     const ws = workspace();
 
     base = `${target()}/messages?workspace=${ws}`;
-    readUrl = `${base}&limit=${PAGE}&cursor=`;
     writeUrl = base;
     block = ws * MAX_ID;
   }
@@ -93,7 +109,7 @@ export default function () {
     return;
   }
 
-  if (Math.random() < WRITE_RATIO) {
+  if (Math.random() < WRITE_CHANCE) {
     const res = remember(state, http.post(
       writeUrl,
       `{"body":"message ${seq++}"}`,
@@ -107,20 +123,29 @@ export default function () {
       state.cookie = null;
     }
   } else {
-    // Start from a random point in the log so reads are not all served from the
-    // same hot tail of the index.
-    //
-    // Offset by the workspace's block. id is one global sequence and the seeder
-    // fills workspaces in order, so workspace w owns ids w*MAX_ID+1 through
-    // (w+1)*MAX_ID. A cursor drawn from 1..MAX_ID therefore sits below every id
-    // that any workspace but 0 owns, and `id < cursor` matches nothing — 511 of
-    // 512 reads returned an empty page and never touched the heap.
-    //
-    // The PAGE floor keeps a whole page below the cursor, so a read returns
-    // PAGE rows rather than however few happen to be left above the block.
-    const cursor = block + PAGE + 1 + Math.floor(Math.random() * SPAN);
+    const tags = hold ? READ_HOLD : READ;
 
-    remember(state, http.get(readUrl + cursor, params(state, hold ? READ_HOLD : READ)));
+    // Several pages per iteration, each its own keyset query at its own depth
+    // and its own page size — a client paging through a log rather than asking
+    // the same question repeatedly.
+    for (let i = 0; i < READS; i++) {
+      const limit = MIN_ROWS + Math.floor(Math.random() * ROW_SPREAD);
+
+      // Start from a random point in the log so reads are not all served from
+      // the same hot tail of the index.
+      //
+      // Offset by the workspace's block. id is one global sequence and the
+      // seeder fills workspaces in order, so workspace w owns ids w*MAX_ID+1
+      // through (w+1)*MAX_ID. A cursor drawn from 1..MAX_ID therefore sits
+      // below every id that any workspace but 0 owns, and `id < cursor` matches
+      // nothing — 511 of 512 reads used to return an empty page.
+      //
+      // The floor is the page size, not a constant, so the cursor always has a
+      // whole page beneath it however many rows this query asked for.
+      const cursor = block + limit + 1 + Math.floor(Math.random() * Math.max(1, MAX_ID - limit));
+
+      remember(state, http.get(`${base}&limit=${limit}&cursor=${cursor}`, params(state, tags)));
+    }
   }
 }
 
