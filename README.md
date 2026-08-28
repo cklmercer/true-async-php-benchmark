@@ -161,7 +161,7 @@ read. rps is requests, so the statement rate is six times it.
 |---|---|---|---|---|---|---|
 | `async` | **7,569** | **45,414** | 344 MB/s | 129.0ms | 176.7ms | 0.00% |
 | `laravel` | 3,303 | 19,818 | 151 MB/s | 291.2ms | 354.4ms | 0.00% |
-| `laravel-async` | 1,870 | 11,220 | 83 MB/s | 83.7ms | 2,293.1ms | 0.00% |
+| `laravel-async` | 2,224 | 13,344 | 101 MB/s | 53.3ms | 1,693.8ms | 0.00% |
 
 A turn answers with 100-400 rows, so a response is tens of kilobytes and the
 fastest stack is moving a third of a gigabyte a second. Building and writing
@@ -171,8 +171,7 @@ something no application does.
 
 `laravel-async`'s median is far below its p95 because it borrows a database
 handle per statement, so a request has to win a free handle six times rather
-than once: most sail through, and the unlucky ones queue repeatedly. Run to run
-it lands between 1,670 and 1,870 rps.
+than once: most sail through, and the unlucky ones queue repeatedly.
 
 Read the two tables together, because they disagree.
 
@@ -189,14 +188,26 @@ Octane control it is meant to beat. Once a request does real work rather than
 sleeping, the cost is Laravel's per-request work — the container, the middleware
 stack, the query builder — and coroutines do not make any of that cheaper. They
 only stop a thread idling during I/O, and with `PG_POOL` connections per thread
-there was not much idling left to recover. The 4x gap to `async` on the same
+there was not much idling left to recover. The 3.4x gap to `async` on the same
 test is the framework, not the runtime.
 
-The pool is not what holds it back, which was worth checking rather than
-assuming. Sweeping `PG_POOL` at 6, 12 and 24 moves the number to 1,814, 1,823
-and 1,761 rps — flat, then worse. Connection availability is not the ceiling
-here; Laravel's per-request CPU work is, which is also why borrowing a handle
-per statement rather than per request costs throughput instead of buying it.
+Two things it is *not*, both checked rather than assumed. It is not the pool:
+sweeping `PG_POOL` at 6, 12 and 24 gives 1,814, 1,823 and 1,761 rps, flat then
+worse. It is not the thread count either, though this stack runs six worker
+threads against Octane's ten: 6, 10 and 14 threads give 1,847, 1,879 and 1,914
+rps. Neither knob is the ceiling. Laravel's per-request CPU work is, which is
+also why borrowing a handle per statement rather than per request costs
+throughput instead of buying it.
+
+And the workers do interleave — that part works exactly as advertised. At 1,000
+VUs the run holds about a thousand requests in flight across six threads, which
+a server that blocked a thread per request could not do at all; its ceiling
+would be six. The trouble is that interleaving only recovers time a thread
+spends idle, and there is almost none to recover here. The Octane control is
+the proof: it blocks an entire worker for a whole request, database waits
+included, and still serves 3,303 rps from ten workers — which puts the whole
+six-statement request at about 3ms of occupancy. A request cannot have been
+waiting on Postgres for long if blocking through all of it costs only 3ms.
 
 That is the question the third stack exists to answer, and the answer is that
 most of the headline gap is Laravel rather than TrueAsync.
