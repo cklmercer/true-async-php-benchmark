@@ -137,12 +137,17 @@ final class Kernel
      */
     public static function store(): Store
     {
+        // Not `?:` like its neighbours: the default is no longer zero, and an
+        // explicit READ_COST_MS=0 is falsy, so `?:` would quietly turn the one
+        // setting that removes the cost into the one that adds it.
+        $readCost = getenv('READ_COST_MS');
+
         return new PostgresStore(
             dsn: getenv('PG_DSN') ?: 'pgsql:host=postgres;port=5432;dbname=bench',
             username: getenv('PG_USER') ?: 'bench',
             password: getenv('PG_PASSWORD') ?: 'bench',
             poolSize: max(1, (int) (getenv('PG_POOL') ?: 16)),
-            readCostMs: (float) (getenv('READ_COST_MS') ?: 0),
+            readCostMs: (float) ($readCost === false || $readCost === '' ? 2 : $readCost),
         );
     }
 

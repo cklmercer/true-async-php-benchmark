@@ -21,6 +21,8 @@ return [
     'max_page_size' => (int) env('MAX_PAGE_SIZE', 100),
 
     // Milliseconds of simulated cost on each read, for modelling a query that
-    // is not a warm index lookup against a database on the same machine.
-    'read_cost_ms' => (float) env('READ_COST_MS', 0),
+    // is not a warm index lookup against a database on the same machine. Two
+    // is roughly a database on another machine; READ_COST_MS=0 gives back the
+    // same-machine lookup.
+    'read_cost_ms' => (float) env('READ_COST_MS', 2),
 ];
