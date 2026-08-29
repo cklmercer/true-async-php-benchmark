@@ -49,6 +49,19 @@ class_exists(FileSessionHandler::class);
 // Booting here also keeps the first request from paying for it.
 $kernel->bootstrap();
 
+// Put back what the ini asked for. HandleExceptions calls error_reporting(-1)
+// while bootstrapping, which overrides it, and on this interpreter Laravel's
+// own Container trips a spl_object_hash() deprecation several times per
+// request. Each one is routed through the error handler and written to stderr:
+// 219,649 log lines in a 30-second run against the Octane control's 13, and
+// 16% of this stack's throughput.
+//
+// Not a thumb on the scale. The control runs a released PHP that does not
+// deprecate that function at all, so leaving it on would be charging this
+// stack for the interpreter being a development branch rather than for
+// anything about coroutines.
+error_reporting(E_ALL & ~E_DEPRECATED);
+
 // Laravel's DatabaseManager caches one Connection per name, so every coroutine
 // on this thread would share a single PDO handle — and interleave statements
 // and transaction state on it. Swapped for a pool that hands each coroutine its

@@ -18,7 +18,8 @@ return static function (Router $router, LoadTestController $loadtest, MessageCon
     $router->get('/loadtest', $loadtest->show(...));
 
     $router->get('/messages', $messages->index(...));
-    $router->post('/messages', $messages->store(...));
+    // One request, six statements: the chat turn. See MessageController::turn.
+    $router->post('/messages', $messages->turn(...));
 
     // The only route with a parameter, so it is the one that exercises the
     // compiled regex matcher and route-model binding.

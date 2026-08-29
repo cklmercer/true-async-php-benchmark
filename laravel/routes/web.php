@@ -14,7 +14,8 @@ use Illuminate\Support\Facades\Route;
 Route::get('/loadtest', [LoadTestController::class, 'show']);
 
 Route::get('/messages', [MessageController::class, 'index']);
-Route::post('/messages', [MessageController::class, 'store']);
+// One request, six statements: the chat turn. See MessageController::turn.
+Route::post('/messages', [MessageController::class, 'turn']);
 
 // The only route with a parameter, so it is the one that exercises the
 // compiled route regex and a binding.

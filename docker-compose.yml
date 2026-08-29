@@ -26,16 +26,40 @@ services:
       postgres: { condition: service_healthy }
     environment:
       HTTP_PORT: "8080"
-      # Listener block, matched by TARGET_PORTS on the k6 service.
-      HTTP_PORTS: "${LISTEN_PORTS:-4}"
-      # Six, measured on a 14-core box with k6 beside it: 6 -> 51.5k/43.6k,
-      # 8 -> 43.4k, 10 -> 50.5k/42.8k, 14 -> 42.8k. More threads than the
-      # server has cores to spare just adds scheduling; the coroutines are
-      # cheap, the threads carrying them are not.
-      WORKERS: "${WORKERS:-6}"
+      # One listener, matched by TARGET_PORTS on the k6 service, because the
+      # other two stacks have one and a benchmark should not give this one four.
+      # The block exists for the generator rather than the server — a VU holds a
+      # connection, so tens of thousands of them exhaust the client's ephemeral
+      # port range long before the server minds. At the 1,000 VUs this test
+      # runs it is worth 1.7%, inside run-to-run noise: 5,580 rps on four
+      # listeners against 5,483 on one. Raise LISTEN_PORTS again before any run
+      # that pushes VUs into the tens of thousands.
+      HTTP_PORTS: "${LISTEN_PORTS:-1}"
+      # One thread per core, the same as the third stack's ASYNC_THREADS, so
+      # neither coroutine stack is given more of the machine than the other. It
+      # was 6, which measured a shade better with k6 beside it (6 -> 51.5k/43.6k,
+      # 10 -> 50.5k/42.8k) but is less than the machine has.
+      #
+      # Not comparable to the control's OCTANE_WORKERS, which has to be much
+      # larger than the core count for a reason this stack does not share: see
+      # the note there.
+      WORKERS: "${WORKERS:-10}"
       JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
       JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
       PAGE_SIZE: "${PAGE_SIZE:-25}"
+      # The statements one chat turn issues, and how wide each read is. Four
+      # and two is six per request. Must match on every stack, or the three
+      # numbers are not measuring the same work.
+      READS_PER_REQUEST: "${READS_PER_REQUEST:-4}"
+      WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
+      MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
+      MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
+      # Milliseconds of simulated cost on each read. Two is roughly a read
+      # against a database on another machine, which is what a deployment
+      # normally has. READ_COST_MS=0 gives the warm index lookup on this same
+      # machine instead, which is the least interesting case a real deployment
+      # has and was the old default.
+      READ_COST_MS: "${READ_COST_MS:-2}"
       APP_KEY: "benchmark-key-not-a-secret-value"
 
       # The tenancy boundary the chat log is keyed on. VUs are pinned to a
@@ -50,12 +74,13 @@ services:
       # Per worker. Times WORKERS this is the backend count Postgres is asked
       # to hold, so it must stay under max_connections below.
       #
-      # Six, measured. A backend is a process, and the sweep is flat-to-worse
-      # in both directions from here: 2 -> 42.0k, 4 -> 41.7k, 6 -> 42.8k,
-      # 16 -> 39.0k, 48 -> 39.7k rps. Past ~60 backends they queue against each
-      # other for CPU instead of running, and the coroutine waiting on a free
-      # slot is parked for free anyway.
-      PG_POOL: "${PG_POOL:-6}"
+      # Sized so the pool is not what limits the stack. Six was measured
+      # against a database that answered instantly, where a handle was held for
+      # microseconds; with READ_COST_MS a read holds one for the whole of its
+      # cost, and six became the ceiling. Swept at the 2ms default:
+      # 6 -> 2,707, 12 -> 5,104, 24 -> 5,504, 48 -> 5,354 rps. It flattens at
+      # 24, so that is the default and the runtime is what the number measures.
+      PG_POOL: "${PG_POOL:-24}"
     ports:
       - "${APP_PORT:-8080}-8083:8080-8083"
     ulimits:
@@ -82,10 +107,20 @@ services:
       postgres: { condition: service_healthy }
     environment:
       HTTP_PORT: "8080"
-      # Octane's default is one worker per core. A worker is blocked for the
-      # whole of a request here, including the jitter sleep, so this is the
-      # concurrency ceiling of the entire stack.
-      OCTANE_WORKERS: "${OCTANE_WORKERS:-auto}"
+      # A worker is blocked for the whole of a request, including the jitter
+      # sleep and every millisecond of READ_COST_MS, so this is not a core count
+      # like the other stacks' thread counts — it is the concurrency ceiling of
+      # the whole stack, and it has to exceed the core count by a lot before the
+      # control is showing its own limit rather than this knob's.
+      #
+      # `auto` is not enough. It resolves to about twice the cores, which was
+      # capping the control at less than half of what it can do once reads cost
+      # anything. Swept at the 2ms default:
+      # 10 -> 592, 20 -> 1,258, 40 -> 2,166, 80 -> 2,351, 160 -> 2,340 rps.
+      # It flattens at 80, so that is the default. Eighty processes each holding
+      # a booted Laravel is the price of the model, and it is the honest number
+      # to compare against.
+      OCTANE_WORKERS: "${OCTANE_WORKERS:-80}"
       # Octane recycles a worker every 500 requests by default, which at these
       # rates is a reboot several times a second.
       OCTANE_MAX_REQUESTS: "${OCTANE_MAX_REQUESTS:-10000000}"
@@ -123,6 +158,19 @@ services:
       JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
       JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
       PAGE_SIZE: "${PAGE_SIZE:-25}"
+      # The statements one chat turn issues, and how wide each read is. Four
+      # and two is six per request. Must match on every stack, or the three
+      # numbers are not measuring the same work.
+      READS_PER_REQUEST: "${READS_PER_REQUEST:-4}"
+      WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
+      MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
+      MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
+      # Milliseconds of simulated cost on each read. Two is roughly a read
+      # against a database on another machine, which is what a deployment
+      # normally has. READ_COST_MS=0 gives the warm index lookup on this same
+      # machine instead, which is the least interesting case a real deployment
+      # has and was the old default.
+      READ_COST_MS: "${READ_COST_MS:-2}"
       WORKSPACES: "${WORKSPACES:-512}"
     ports:
       - "${LARAVEL_PORT:-8090}:8080"
@@ -165,10 +213,14 @@ services:
       # coroutine on it. The analogue of the async stack's WORKERS, not of
       # Octane's OCTANE_WORKERS: a thread here is not blocked for the length of
       # a request, so this is a core count and not a concurrency ceiling.
-      ASYNC_THREADS: "${ASYNC_THREADS:-6}"
-      # Per thread, same as the async stack's PG_POOL. This is what stops the
-      # coroutines on a thread sharing one PDO handle; see PooledDatabaseManager.
-      PG_POOL: "${PG_POOL:-6}"
+      ASYNC_THREADS: "${ASYNC_THREADS:-10}"
+      # Per thread, and the same number the async stack gets, so neither
+      # coroutine stack is handed more of Postgres than the other. This stack
+      # plateaus earlier than that one — 6 -> 2,019, 12 -> 2,199, 24 -> 2,190,
+      # 48 -> 2,121 rps at the 2ms default — so 24 is past its knee and the
+      # pool is not what limits it. It is also what makes the connection it
+      # holds for a whole request cost nothing: see the note in the README.
+      PG_POOL: "${PG_POOL:-24}"
 
       APP_ENV: production
       APP_DEBUG: "false"
@@ -195,6 +247,19 @@ services:
       JITTER_MIN_MS: "${JITTER_MIN_MS:-2}"
       JITTER_MAX_MS: "${JITTER_MAX_MS:-120}"
       PAGE_SIZE: "${PAGE_SIZE:-25}"
+      # The statements one chat turn issues, and how wide each read is. Four
+      # and two is six per request. Must match on every stack, or the three
+      # numbers are not measuring the same work.
+      READS_PER_REQUEST: "${READS_PER_REQUEST:-4}"
+      WRITES_PER_REQUEST: "${WRITES_PER_REQUEST:-2}"
+      MIN_PAGE_SIZE: "${MIN_PAGE_SIZE:-25}"
+      MAX_PAGE_SIZE: "${MAX_PAGE_SIZE:-100}"
+      # Milliseconds of simulated cost on each read. Two is roughly a read
+      # against a database on another machine, which is what a deployment
+      # normally has. READ_COST_MS=0 gives the warm index lookup on this same
+      # machine instead, which is the least interesting case a real deployment
+      # has and was the old default.
+      READ_COST_MS: "${READ_COST_MS:-2}"
       WORKSPACES: "${WORKSPACES:-512}"
     ports:
       - "${LARAVEL_ASYNC_PORT:-8091}:8080"
@@ -280,9 +345,9 @@ services:
       app: { condition: service_started }
     environment:
       TARGET: "http://app:8080"
-      # Must match the app's HTTP_PORTS: VUs spread across app:8080..8083 so the
+      # Must match the app's HTTP_PORTS: with a block, VUs spread across
       # ephemeral port range stops being the ceiling. See benchmark/target.js.
-      TARGET_PORTS: "${LISTEN_PORTS:-4}"
+      TARGET_PORTS: "${LISTEN_PORTS:-1}"
       # Must match the app's WORKSPACES: each VU is pinned to one workspace, so
       # this decides how many users share a database.
       WORKSPACES: "${WORKSPACES:-512}"
